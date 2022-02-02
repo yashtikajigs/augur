@@ -64,7 +64,6 @@ class Housekeeper:
         logger.info("Scheduling update processes")
         for job in self.jobs:
             process = Process(target=self.updater_process, name=job["model"], args=(self.broker_host, self.broker_port, self.broker, job, (self.augur_logging.housekeeper_job_config, self.augur_logging.get_config())))
-            logger.debug(f'starting process {process}')
             self._processes.append(process)
             process.start()
 
@@ -97,7 +96,7 @@ class Housekeeper:
                     for worker in list(broker._getvalue().keys()):
                         if job['model'] in broker[worker]['models'] and job['given'] in broker[worker]['given']:
                             compatible_worker_found = True
-                    time.sleep(3)
+                    time.sleep(10)
                     continue
 
                 logger.info("Housekeeper recognized that the broker has a worker that " + 
@@ -107,7 +106,6 @@ class Housekeeper:
                         job['model'], job['given'][0]))
                     
                     if job['given'][0] == 'git_url' or job['given'][0] == 'github_url':
-                        logger.debug(f'job array is: {job}')
                         for repo in job['repos']:
                             if job['given'][0] == 'github_url' and 'github.com' not in repo['repo_git']:
                                 continue
@@ -129,10 +127,10 @@ class Housekeeper:
 
                             logger.debug(task)
 
-                            time.sleep(15)
+                            time.sleep(10)
 
                     elif job['given'][0] == 'repo_group':
-                        logger.debug(f'job array is: {job}')
+                        time.sleep(120)
                         task = {
                                 "job_type": job['job_type'] if 'job_type' in job else 'MAINTAIN', 
                                 "models": [job['model']], 
@@ -142,14 +140,12 @@ class Housekeeper:
                                 }
                             }
                         try:
+                            time.sleep(120)
                             requests.post('http://{}:{}/api/unstable/task'.format(
-                                broker_host,broker_port), json=task, timeout=30)
+                                broker_host,broker_port), json=task, timeout=10)
+                            time.sleep(120)
                         except Exception as e:
                             logger.error("Error encountered: {}".format(e))
-
-                        logger.debug(task)
-
-                        time.sleep(15)
 
                     logger.info("Housekeeper finished sending {} tasks to the broker for it to distribute to your worker(s)".format(len(job['repos'])))
                     time.sleep(job['delay'])
@@ -183,21 +179,14 @@ class Housekeeper:
                     ) if 'repo_group_id' in job and job['repo_group_id'] != 0 else '{} repo.repo_id IN ({})'.format(
                     where_and, ",".join(str(id) for id in job['repo_ids'])) if 'repo_ids' in job else ''
                 repo_url_sql = s.sql.text("""
-                        SELECT repo.repo_id, repo.repo_git, pull_request_count, collected_pr_count, 
-                        (repo_info.pull_request_count - pr_count.collected_pr_count) AS pull_requests_missing
-                        FROM augur_data.repo LEFT OUTER JOIN (
-                            SELECT count(*) AS collected_pr_count, repo_id 
-                            FROM pull_requests GROUP BY repo_id ) pr_count 
-                        ON pr_count.repo_id = repo.repo_id LEFT OUTER JOIN ( 
-                            SELECT repo_id, MAX ( data_collection_date ) AS last_collected 
-                            FROM augur_data.repo_info 
-                            GROUP BY repo_id) recent_info 
-                        ON recent_info.repo_id = pr_count.repo_id LEFT OUTER JOIN repo_info 
-                        ON recent_info.repo_id = repo_info.repo_id
-                            AND repo_info.data_collection_date = recent_info.last_collected
+                    SELECT yy.repo_id,repo_git,pull_request_count,collected_pr_count,pull_requests_missing FROM (
+                    SELECT repo_info.repo_id,repo.repo_git,MAX (pull_request_count) AS pull_request_count FROM repo_info,repo-- WHERE issues_enabled = 'true'
+                    WHERE pull_request_count>=1 AND repo.repo_id=repo_info.repo_id GROUP BY repo_info.repo_id,repo.repo_git ORDER BY repo_info.repo_id,repo.repo_git) yy LEFT OUTER JOIN (
+                    SELECT A.repo_id,COUNT (*) AS collected_pr_count,(b.pull_request_count-COUNT (*)) AS pull_requests_missing FROM augur_data.repo A,augur_data.pull_requests d,augur_data.repo_info b,(
+                    SELECT repo_id,MAX (data_collection_date) AS last_collected FROM augur_data.repo_info GROUP BY repo_id ORDER BY repo_id) e,(
+                    SELECT repo_id,MAX (data_collection_date) AS last_pr_collected FROM augur_data.pull_requests GROUP BY repo_id ORDER BY repo_id) f WHERE A.repo_id=b.repo_id AND LOWER (A.repo_git) LIKE '%github.com%' AND A.repo_id=d.repo_id AND b.repo_id=d.repo_id AND e.repo_id=A.repo_id AND b.data_collection_date=e.last_collected AND f.repo_id=A.repo_id
                         {}
-                        GROUP BY repo.repo_id, repo_info.pull_request_count, pr_count.collected_pr_count
-                        ORDER BY pull_requests_missing DESC NULLS LAST
+                    GROUP BY A.repo_id,d.repo_id,b.pull_request_count,e.last_collected,f.last_pr_collected ORDER BY A.repo_id DESC) zz ON yy.repo_id=zz.repo_id ORDER BY pull_requests_missing DESC NULLS FIRST
                     """.format(where_condition)) if job['model'] == 'pull_requests' else s.sql.text("""
                         SELECT
                             * 
@@ -247,7 +236,6 @@ class Housekeeper:
                         {}
                         group by repo.repo_id ORDER BY commit_count {}
                     """.format(where_condition, job['order']))
-                logger.debug(f'repo url sql is: {repo_url_sql}. \n\n \n \n  where condition is {where_condition} \n \n \n \n and the where_and condition is {where_and}\n \n \n ')
                 
                 reorganized_repos = pd.read_sql(repo_url_sql, self.db, params={})
                 if len(reorganized_repos) == 0:
@@ -310,8 +298,6 @@ class Housekeeper:
             
                 if finishing_task:
                     reorganized_repos[0]['focused_task'] = 1
-
-                #logger.debug(f'reorganized repos == {reorganized_repos}.')
                 
                 job['repos'] = reorganized_repos
 

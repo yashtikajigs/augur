@@ -1,7 +1,11 @@
 #Get everything that the base depends on.
+import math
+
 from numpy.lib.utils import source
 from workers.worker_base import *
 import sqlalchemy as s
+import time
+import math
 
 #This is a worker base subclass that adds the ability to query github/gitlab with the api key
 class WorkerGitInterfaceable(Worker):
@@ -274,7 +278,7 @@ class WorkerGitInterfaceable(Worker):
         source_data = expanded_source_df.to_dict(orient='records')
 
         #Filter out bad data where we can't even hit the api.
-        source_data = [data for data in source_data if f'{prefix}login' in data and data[f'{prefix}login'] != None]
+        source_data = [data for data in source_data if f'{prefix}login' in data and data[f'{prefix}login'] != None and type(data[f'{prefix}login']) is str]
 
         self.logger.info(f"table_values_cntrb keys: {table_values_cntrb[0].keys()}")
         # self.logger.info(f"source_data keys: {source_data[0].keys()}")
@@ -283,13 +287,19 @@ class WorkerGitInterfaceable(Worker):
         #TODO: seperate this method into it's own worker.
         #cntrb_id_offset = self.get_max_id(self.contributors_table, 'cntrb_id') - 1
 
+        self.logger.debug(f"Enriching {len(source_data)} contributors.")
+
+        # source_data = source_data.loc[data[f'{prefix}login'] != 'nan']
+
         # loop through data to test if it is already in the database
         for index, data in enumerate(source_data):
 
+            if data[f'{prefix}login'] == 'nan':
+                self.logger.debug("Nan user found continuing")
+                continue
+
             #removed this log because it was generating a lot of data.
             #self.logger.info(f"Enriching {index} of {len(source_data)}")
-            self.logger.debug(f"Enriching {len(source_data)} contributors.")
-
 
             user_unique_ids = []
 
@@ -298,25 +308,23 @@ class WorkerGitInterfaceable(Worker):
                 #This will trigger a KeyError if data has alt identifier.
                 data[f'{prefix}id']
                 for row in table_values_cntrb:
-                  try:
+                    # removed checks for nan user in this block because this is getting all the gh_user_ids that are
+                    # already in the database so it doesn't need to be filtered from the database, it needs to be
+                    # filtered out so it is never inserted into the database
+                    # Andrew Brain 12/21/2021
                     user_unique_ids.append(row['gh_user_id'])
-                  except Exception as e:
-                    self.logger.info(f"Error adding gh_user_id: {e}. Row: {row}")
-                    stacker = traceback.format_exc()
-                    self.logger.debug(f"{stacker}")
+
             except KeyError:
-                self.logger.info("Source data doesn't have user.id. Using node_id instead.")
-                stacker = traceback.format_exc()
-                self.logger.debug(f"{stacker}")
-                pass 
+                self.print_traceback("Enrich_cntrb_id, data doesn't have user.id. Using node_id instead", e, True)
+
             finally: 
                 for row in table_values_cntrb:
-                  try:
-                    user_unique_ids.append(row['gh_node_id'])
-                  except Exception as e:
-                    self.logger.info(f"Error adding gh_node_id: {e}. Row: {row}")
-                    stacker = traceback.format_exc()
-                    self.logger.debug(f"{stacker}")
+                    try:
+                        user_unique_ids.append(row['gh_node_id'])
+                    except Exception as e:
+                        self.logger.info(f"Error adding gh_node_id: {e}. Row: {row}")
+                        self.print_traceback("", e, True)
+
 
 
             #self.logger.info(f"gh_user_ids: {gh_user_ids}")
@@ -348,9 +356,13 @@ class WorkerGitInterfaceable(Worker):
                     data[f'{prefix}id']
                     #gets the dict from the table_values_cntrb that contains data['user.id']
                     user_id_row = list(filter(lambda x: x['gh_user_id'] == source_data_id, table_values_cntrb))[0]
+                    #### Andrew: in a small number of cases, using data on contributors originally gathered in late 2019, there
+                    #### is a mismatch .. the gh_user_id for a login is different. I suspect this rare case to be one 
+                    #### where a person did something that changed their gh_user_id ... I am unsure how this can happen ... 
                 except KeyError:
                     user_id_row = list(filter(lambda x: x['gh_node_id'] == source_data_id, table_values_cntrb))[0]
-
+                    #pass # 12/3/2021 SPG ... added pass to try to get past this key error in large inserts.
+                    continue # 12/3/2021 SPG ... may be better inside a loop
 
                 #assigns the cntrb_id to the source data to be returned to the workers
                 data['cntrb_id'] = user_id_row['cntrb_id']
@@ -364,11 +376,11 @@ class WorkerGitInterfaceable(Worker):
               self.logger.info("login: {}".format(data[f'{prefix}login']))
 
               try:
-                url = ("https://api.github.com/users/" + data[f'{prefix}login'])
+                url = ("https://api.github.com/users/" + str(data[f'{prefix}login']))
               except Exception as e:
                 self.logger.info(f"Error when creating url: {e}. Data: {data}")
-                continue
-
+                #pass # changed continue to pass 12/3/2021 SPG
+                continue # changed back 12/3/2021 SPG
               attempts = 0
               contributor = None
               success = False
@@ -376,23 +388,25 @@ class WorkerGitInterfaceable(Worker):
               while attempts < 10:
                 self.logger.info(f"Hitting endpoint: {url} ...\n")
                 try:
-                  response = requests.get(url=url , headers=self.headers)
+                  response = requests.get(url=url, headers=self.headers)
                 except TimeoutError:
                   self.logger.info(f"User data request for enriching contributor data failed with {attempts} attempts! Trying again...")
                   time.sleep(10)
-                  continue
-
+                  #pass # changed continue to pass 12/3/2021 SPG
+                  continue # changed back 12/3/2021 SPG
                 self.update_rate_limit(response,platform=platform)
 
                 try:
                   contributor = response.json()
                 except:
                   contributor = json.loads(json.dumps(response.text))
+                  continue # added continue 12/3/2021 SPG
 
 
                 if type(contributor) == dict:
                   self.logger.info("Request returned a dict!")
-                  self.logger.info(f"Contributor data: {contributor}")
+                  self.logger.info(f"Contributor data: {contributor}") 
+                  # contributor['gh_login'] = str(contributor['gh_login']) ## cast as string by SPG on 11/28/2021 due to `nan` user
                   success = True
                   break
                 elif type(contributor) == list:
@@ -407,6 +421,7 @@ class WorkerGitInterfaceable(Worker):
                   else:
                     try:
                       contributor = json.loads(contributor)
+                      # contributor['gh_login'] = str(contributor['gh_login']) ## cast as string by SPG on 11/28/2021 due to `nan` user                     
                       success = True
                       break
                     except:
@@ -429,7 +444,7 @@ class WorkerGitInterfaceable(Worker):
               # "cntrb_type": , dont have a use for this as of now ... let it default to null
               "cntrb_canonical": contributor['email'] if 'email' in contributor else None,
               "gh_user_id": contributor['id'],
-              "gh_login": contributor['login'],
+              "gh_login": str(contributor['login']),  ## cast as string by SPG on 11/28/2021 due to `nan` user
               "gh_url": contributor['url'],
               "gh_html_url": contributor['html_url'],
               "gh_node_id": contributor['node_id'],
@@ -461,9 +476,12 @@ class WorkerGitInterfaceable(Worker):
               except s.exc.IntegrityError:
                 self.logger.info(f"there was a collision caught ....")
                 self.logger.info(traceback.format_exc())
+                #pass # added by sean 11/29/2021 ... think it might be blocking comment insertion otherwise
+                continue # changed to continue on 12/3/2021
               except Exception as e:
                 self.logger.info(f"Contributor was unable to be added to table! Attempting to get cntrb_id from table anyway because of possible collision. Error: {e}")
-
+                #pass # added by sean 11/29/2021 ... think it might be blocking comment insertion otherwise
+                continue 
 
               #Get the contributor id from the newly inserted contributor.
               cntrb_id_row = self.db.execute(
@@ -483,10 +501,10 @@ class WorkerGitInterfaceable(Worker):
 
 
               cntrb_data = {
-              'cntrb_id': data['cntrb_id'],
+              'cntrb_id': int(data['cntrb_id']), # came through as a float. Fixed 11/28/2021, SPG
               'gh_node_id': cntrb['gh_node_id'],
-              'cntrb_login': cntrb['cntrb_login'],
-              'gh_user_id': cntrb['gh_user_id']
+              'cntrb_login': str(cntrb['cntrb_login']), # NaN user issue. Fixed 11/28/2021, SPG
+              'gh_user_id': int(cntrb['gh_user_id']) # came through as a float. Fixed 11/28/2021, SPG
               }
               #This updates our list of who is already in the database as we iterate to avoid duplicates.
               #People who make changes tend to make more than one in a row.
@@ -496,6 +514,16 @@ class WorkerGitInterfaceable(Worker):
           "Contributor id enrichment successful, result has "
           f"{len(source_data)} data points.\n"
         )
+
+        for data in source_data:
+
+            self.logger.debug("User login type: " + str(type(data[f'{prefix}login'])) + ". Login: " + str(data[f'{prefix}login']))
+
+            try:
+                data['cntrb_id']
+            except:
+                self.logger.debug(f"AB ERROR: data exiting enrich_cntrb_id without cntrb_id, login is: " + str(data[f'{prefix}login']))
+
         return source_data
 
 
@@ -970,9 +998,13 @@ class WorkerGitInterfaceable(Worker):
             except:
                 self.oauths[0]['rate_limit'] -= 1
                 self.logger.info("Headers did not work, had to decrement")
+                time.sleep(30)
+
         self.logger.info(
             f"Updated rate limit, you have: {self.oauths[0]['rate_limit']} requests remaining."
         )
+
+        #Stalls after here for some reason.
         if self.oauths[0]['rate_limit'] <= 0:
             try:
                 reset_time = response.headers['X-RateLimit-Reset']
@@ -1306,7 +1338,13 @@ class WorkerGitInterfaceable(Worker):
 
                             elif response.status_code == 200:
                                 try:
-                                    page_data = response.json()
+                                    page_data = response.json() 
+                                    # This seems to not be working.
+                                    ### added by SPG 12/1/2021 for dealing with empty JSON pages where there
+                                    ### are no reviews.
+                                    #if not 'results' in page_data or len(page_data['results']) == 0:
+                                    #    continue  
+                                  
                                 except:
                                     page_data = json.loads(json.dumps(response.text))
                                     continue
@@ -1337,10 +1375,10 @@ class WorkerGitInterfaceable(Worker):
                                     f"Unhandled response code: {response.status_code} {url}\n"
                                 )
 
+                        ## Added additional exception logging and a pass in this block.
                         except Exception as e:
-                            self.logger.debug(
-                                f"{url} generated an exception: {traceback.format_exc()}\n"
-                            )
+                            self.logger.info(f"Error adding gh_node_id: {e}. Row: {row}")
+                            self.print_traceback(f"{url} generated an exception: count is {count}, attemts are {attempts}.", e, True)
 
                 attempts += 1
 
@@ -1353,7 +1391,7 @@ class WorkerGitInterfaceable(Worker):
 
     #insertion_method and stagger are arguments that allow paginate_endpoint to insert at around ~500 pages at a time.
     def paginate_endpoint(
-        self, url, action_map={}, table=None, where_clause=True, platform='github', in_memory=True, stagger=False, insertion_method=None, insertion_threshold=500
+        self, url, action_map={}, table=None, where_clause=True, platform='github', in_memory=True, stagger=False, insertion_method=None, insertion_threshold=1000
     ):
 
         #Get augur columns using the action map along with the primary key
@@ -1405,10 +1443,15 @@ class WorkerGitInterfaceable(Worker):
                             f"{url.format(page_number)}\n"
                         )
                         break
+                    if "You have exceeded a secondary rate limit. Please wait a few minutes before you try again" in page_data['message']:
+                        num_attempts -=1
+                        self.logger.info('\n\n\n\nSleeping for 100 seconds due to secondary rate limit issue.\n\n\n\n')
+                        time.sleep(100)
                     if "You have triggered an abuse detection mechanism." in page_data['message']:
                         num_attempts -= 1
                         self.update_rate_limit(response, temporarily_disable=True,platform=platform)
                     if page_data['message'] == "Bad credentials":
+                        self.logger.info("\n\n\n\n\n\n\n POSSIBLY BAD TOKEN \n\n\n\n\n\n\n")
                         self.update_rate_limit(response, bad_credentials=True, platform=platform)
                 elif type(page_data) == str:
                     self.logger.info(f"Warning! page_data was string: {page_data}\n")
