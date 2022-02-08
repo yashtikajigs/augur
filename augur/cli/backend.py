@@ -164,13 +164,24 @@ def initialize_components(augur_app, disable_housekeeper):
         housekeeper = Housekeeper(broker=broker, augur_app=augur_app)
 
         controller = augur_app.config.get_section('Workers')
-        for worker in controller.keys():
-            if controller[worker]['switch']:
-                for i in range(controller[worker]['workers']):
-                    logger.info("Booting {} #{}".format(worker, i + 1))
-                    worker_process = mp.Process(target=worker_start, name=f"{worker}_{i}", kwargs={'worker_name': worker, 'instance_number': i, 'worker_port': controller[worker]['port']}, daemon=True)
-                    worker_processes.append(worker_process)
-                    worker_process.start()
+
+        worker = "facade_worker"
+
+        logger.info("Booting {} #{}".format(worker, 1))
+        worker_process = mp.Process(target=worker_start, name=f"{worker}_1",
+                                    kwargs={'worker_name': worker, 'instance_number': 1,
+                                            'worker_port': controller[worker]['port']}, daemon=True)
+        worker_processes.append(worker_process)
+        worker_process.start()
+        #
+        # for worker in controller.keys():
+        #     logger.info(worker)
+        #     if controller[worker]['switch']:
+        #         for i in range(controller[worker]['workers']):
+        #             logger.info("Booting {} #{}".format(worker, i + 1))
+        #             worker_process = mp.Process(target=worker_start, name=f"{worker}_{i}", kwargs={'worker_name': worker, 'instance_number': i, 'worker_port': controller[worker]['port']}, daemon=True)
+        #             worker_processes.append(worker_process)
+        #             worker_process.start()
 
     augur_app.manager = manager
     augur_app.broker = broker
