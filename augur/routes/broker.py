@@ -10,11 +10,11 @@ import requests
 import json
 from flask import request, Response
 
+#Include method to restart worker on task failure
+from augur.cli import worker_start
+
 logger = logging.getLogger(__name__)
 
-# TODO: not this...
-def worker_start(worker_name=None):
-    process = subprocess.Popen("cd workers/{} && {}_start".format(worker_name,worker_name), shell=True)
 
 def send_task(worker_proxy):
 
