@@ -132,6 +132,8 @@ class DummyFullWorker(ContributorInterfaceable):
 
         self.db_str = database_connection_string
         
+        print(self.db_str)
+        
         # Get a way to connect to the docker database.
         self.db = poll_database_connection(database_connection_string)
         self.logger = logging.getLogger()
