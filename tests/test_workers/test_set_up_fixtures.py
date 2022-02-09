@@ -73,15 +73,28 @@ def database_connection():
     image = client.images.build(
         path=buildString, dockerfile="util/docker/database/Dockerfile", pull=True)
 
-    # Start a container and detatch
-    # Wait until the database is ready to accept connections
-    databaseContainer = client.containers.run(image[0].id, command=None, ports={
-                                              '5432/tcp': 5400}, detach=True)
+    #Handle if the port is being used first
+    tries = 5
+    port = 5400
+    
+    while tries > 0:
+        
+        try:
+            # Start a container and detatch
+            # Wait until the database is ready to accept connections
+            databaseContainer = client.containers.run(image[0].id, command=None, ports={
+                                                '5432/tcp': port}, detach=True)
 
-    databaseContainer.rename("Test_database")
+            databaseContainer.rename("Test_database")
+        except docker.errors.APIError:
+            tries -= 1
+            port += 1
+            continue
+        
+        break
 
     DB_STR = 'postgresql://{}:{}@{}:{}/{}'.format(
-        "augur", "augur", "172.17.0.1", 5400, "test"
+        "augur", "augur", "172.17.0.1", port, "test"
     )
 
     time.sleep(10)
