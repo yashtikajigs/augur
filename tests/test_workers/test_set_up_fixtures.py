@@ -89,6 +89,12 @@ def database_connection_string():
         except docker.errors.APIError:
             tries -= 1
             port += 1
+            
+            #Kill if not able to get a port
+            if tries <= 0:
+                print("Not able to get a port!")
+                raise docker.errors.APIError
+            
             continue
         
         break
