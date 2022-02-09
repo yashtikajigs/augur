@@ -65,6 +65,9 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
         # self.initialize_logging()
         self.logger = logger
 
+        
+        self.finishing_task = False
+
         # try:
 
         #     theConfig = self.augur_config.get_section(["contributor_interface"])
@@ -100,6 +103,7 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
 
         self.logger.info("Facade now has contributor interface.")
 
+        self.worker_type = "Contributor_interface"
         self.tool_source = '\'Facade Worker\''
         self.tool_version = '\'1.0.1\''
         self.data_source = '\'Git Log\''
@@ -225,18 +229,6 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
 
     """
 
-    def create_endpoint_from_email(self, email):
-        self.logger.info(f"Trying to resolve contributor from email: {email}")
-        # Note: I added "+type:user" to avoid having user owned organizations be returned
-        # Also stopped splitting per note above.
-        url = 'https://api.github.com/search/users?q={}+in:email+type:user'.format(
-            email)
-        # self.logger.info(f"url is: {url}") redundant log statement.
-        # (
-        #    email.split('@')[0], email.split('@')[-1])
-
-        return url
-
     # Try to construct the best url to ping GitHub's API for a username given a full name.
     def create_endpoint_from_name(self, contributor):
         self.logger.info(
@@ -257,83 +249,6 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
             cmt_cntrb['fname'], cmt_cntrb['lname'])
 
         return url
-
-    # Hit the endpoint specified by the url and return the json that it returns if it returns a dict.
-    # Returns None on failure.
-    def request_dict_from_endpoint(self, url, timeout_wait=10):
-        self.logger.info(f"Hitting endpoint: {url}")
-
-        attempts = 0
-        response_data = None
-        success = False
-
-        # This borrow's the logic to safely hit an endpoint from paginate_endpoint.
-        while attempts < 10:
-            try:
-                response = requests.get(url=url, headers=self.headers)
-            except TimeoutError:
-                self.logger.info(
-                    f"User data request for enriching contributor data failed with {attempts} attempts! Trying again...")
-                time.sleep(timeout_wait)
-                continue
-
-            # Make sure we know how many requests our api tokens have.
-            self.update_rate_limit(response, platform="github")
-
-            # Update the special rate limit
-            self.recent_requests_made += 1
-
-            # Sleep if we have made a lot of requests recently
-            if self.recent_requests_made == self.special_rate_limit:
-                self.recent_requests_made = 0
-                self.logger.info(
-                    f"Special rate limit of {self.special_rate_limit} reached! Sleeping for thirty seconds.")
-                # Sleep for thirty seconds before making a new request.
-                time.sleep(60)
-
-            try:
-                response_data = response.json()
-            except:
-                response_data = json.loads(json.dumps(response.text))
-
-            if type(response_data) == dict:
-                # Sometimes GitHub Sends us an error message in a dict instead of a string.
-                # While a bit annoying, it is easy to work around
-                if 'message' in response_data:
-                    try:
-                        assert 'API rate limit exceeded' not in response_data['message']
-                    except AssertionError as e:
-                        self.logger.info(
-                            f"Detected error in response data from gitHub. Trying again... Error: {e}")
-                        attempts += 1
-                        continue
-
-                # self.logger.info(f"Returned dict: {response_data}")
-                success = True
-                break
-            elif type(response_data) == list:
-                self.logger.warning("Wrong type returned, trying again...")
-                self.logger.info(f"Returned list: {response_data}")
-            elif type(response_data) == str:
-                self.logger.info(
-                    f"Warning! page_data was string: {response_data}")
-                if "<!DOCTYPE html>" in response_data:
-                    self.logger.info("HTML was returned, trying again...\n")
-                elif len(response_data) == 0:
-                    self.logger.warning("Empty string, trying again...\n")
-                else:
-                    try:
-                        # Sometimes raw text can be converted to a dict
-                        response_data = json.loads(response_data)
-                        success = True
-                        break
-                    except:
-                        pass
-            attempts += 1
-        if not success:
-            return None
-
-        return response_data
 
     def insert_alias(self, contributor, email):
         # Insert cntrb_id and email of the corresponding record into the alias table
@@ -431,7 +346,7 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
         if canonical_email is not None:
             del cntrb["cntrb_canonical"]
             self.logger.info(
-                "Existing canonical email found in database and will not be overwritten.")
+                f"Existing canonical email {canonical_email} found in database and will not be overwritten.")
 
         while attempts < max_attempts:
             try:
@@ -725,7 +640,8 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
 
                 # self.logger.info(f"{cntrb}")
             except Exception as e:
-                self.logger.info(f"Error: {e}")
+                self.logger.info(f"Error when trying to create cntrb: {e}")
+                continue
             # Check if the github login exists in the contributors table and add the emails to alias' if it does.
 
             # Also update the contributor record with commit data if we can.
@@ -747,6 +663,7 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
                     ''.join(traceback.format_exception(None, e, e.__traceback__)))
                 self.logger.info(
                     f"Contributor id not able to be found in database despite the user_id existing. Something very wrong is happening. Error: {e}")
+                continue 
 
             # Resolve any unresolved emails if we get to this point.
             # They will get added to the alias table later
@@ -824,7 +741,7 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
 
     def create_endpoint_from_repo_id(self, repo_id):
         select_repo_path_query = s.sql.text("""
-            SELECT repo_path, repo_name from repo
+            SELECT repo_git from repo
             WHERE repo_id = :repo_id_bind
         """)
 
@@ -837,15 +754,8 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
         if not len(result) >= 1:
             raise LookupError
 
-        # Else put into a more readable local var
-        self.logger.info(f"Result: {result}")
-        repo_path = result[0]['repo_path'].split(
-            "/")[1] + "/" + result[0]['repo_name']
-
-        # Create endpoint for committers in a repo.
-        url = "https://api.github.com/repos/" + repo_path + "/contributors?state=all&direction=asc&per_page=100&page={}"
-
-        #self.logger.info(f"Url: {url}")
+        url = result[0]['repo_git']
+        self.logger.info(f"Url: {url}")
 
         return url
 
@@ -863,96 +773,13 @@ class ContributorInterfaceable(WorkerGitInterfaceable):
             # Exit on failure
             return
 
-        # HIt the endpoint if we can and put it in a dict
-        # committer_json = self.request_dict_from_endpoint(
-        #    endpoint, timeout_wait=0)
 
-        # Prepare for pagination and insertion into the contributor's table with an action map
-        # TODO: this might be github specific
-        committer_action_map = {
-            'insert': {
-                'source': ['login'],
-                'augur': ['cntrb_login']
+        contrib_entry_info = {
+            'given': {
+                'github_url': endpoint,
+                'git_url': endpoint,
+                'gitlab_url': endpoint
             }
         }
 
-        # Create a method so that paginate_endpoint knows how our records need to be inserted
-        def committer_insert(inc_source_comitters, action_map):
-
-            if len(inc_source_comitters['all']) == 0:
-                self.logger.info("There are no committers for this repository.\n")
-                #self.register_task_completion(self.task_info, self.repo_id, 'pull_requests')
-                return
-
-            #self.logger.debug(f"inc_source_committers is: {inc_source_comitters} and the action map is {action_map}...")
-
-            cntrbs_insert = [
-                {
-                "cntrb_login": cntrb['login'],
-                "cntrb_company": cntrb['company'] if 'company' in cntrb else None,
-                # "cntrb_type": , dont have a use for this as of now ... let it default to null
-                "gh_user_id": cntrb['id'],
-                "gh_login": cntrb['login'],
-                "gh_url": cntrb['url'],
-                "gh_html_url": cntrb['html_url'],
-                "gh_node_id": cntrb['node_id'],
-                "gh_avatar_url": cntrb['avatar_url'],
-                "gh_gravatar_id": cntrb['gravatar_id'],
-                "gh_followers_url": cntrb['followers_url'],
-                "gh_following_url": cntrb['following_url'],
-                "gh_gists_url": cntrb['gists_url'],
-                "gh_starred_url": cntrb['starred_url'],
-                "gh_subscriptions_url": cntrb['subscriptions_url'],
-                "gh_organizations_url": cntrb['organizations_url'],
-                "gh_repos_url": cntrb['repos_url'],
-                "gh_events_url": cntrb['events_url'],
-                "gh_received_events_url": cntrb['received_events_url'],
-                "gh_type": cntrb['type'],
-                "gh_site_admin": cntrb['site_admin'],
-                "cntrb_last_used": None if 'updated_at' not in cntrb else cntrb['updated_at'],
-                "cntrb_full_name": None if 'name' not in cntrb else cntrb['name'],
-                "tool_source": self.tool_source,
-                "tool_version": self.tool_version,
-                "data_source": self.data_source
-
-            } for cntrb in inc_source_comitters['all']
-            ]
-
-            inserted = len(inc_source_comitters['all'])
-            # Try to insert all committers
-            for committer in cntrbs_insert:
-                try:
-                    self.db.execute(
-                        self.contributors_table.insert().values(committer))
-                except Exception as e:
-                    self.logger.info(f"Could not insert new committer ERROR: {e}")
-                    inserted -= 1  # Decrement the insertion cound
-
-            self.logger.info(f"Inserted {inserted} new contributors.")
-
-            return
-
-        source_committers = self.paginate_endpoint(
-            endpoint, action_map=committer_action_map, table=self.contributors_table,
-            where_clause=True,
-            stagger=True,
-            insertion_method=committer_insert
-        )
-
-        #self.logger.info(f"source committers: {source_committers}")
-        committer_insert(source_committers, committer_action_map)
-
-    ''' Future method to try and get additional info for partially populated users. 
-    def get_information_from_commits(self, repo_id):
-
-        get_cntrb_info_from_commits = s.sql.text("""
-            SELECT DISTINCT
-                contributors.cntrb_login 
-            FROM
-                contributors 
-            WHERE
-                cntrb_canonical IS NULL
-        """)
-
-        Call the Github API for each of these people and fill in 
-            any missing information '''
+        self.query_github_contributors(contrib_entry_info, repo_id)

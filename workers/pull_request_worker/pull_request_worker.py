@@ -49,11 +49,129 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
 
         # Define data collection info
         self.tool_source = 'GitHub Pull Request Worker'
-        self.tool_version = '1.0.0'
+        self.tool_version = '1.2.0'
         self.data_source = 'GitHub API'
 
         #Needs to be an attribute of the class for incremental database insert using paginate_endpoint
         self.pk_source_prs = []
+
+    #Only used by the pull request worker's review_model_outfactor
+    def multi_thread_urls(self, all_urls, max_attempts=5, platform='github'):
+        """
+        :param all_urls: list of tuples
+        """
+
+        if not len(all_urls):
+            self.logger.info("No urls to multithread, returning blank list.\n")
+            return []
+
+        def load_url(url, extra_data={}):
+            try:
+                html = requests.get(url, stream=True, headers=self.headers)
+                return html, extra_data
+            except requests.exceptions.RequestException as e:
+                self.logger.debug(f"load_url inside multi_thread_urls failed with {e}, for usl {url}. exception registerred.registered")
+
+        self.logger.info("Beginning to multithread API endpoints.")
+
+        start = time.time()
+
+        all_data = []
+        valid_url_count = len(all_urls)
+
+        partitions = math.ceil(len(all_urls) / 600)
+        self.logger.info(f"{len(all_urls)} urls to process. Trying {partitions} partitions. " +
+            f"Using {max(multiprocessing.cpu_count()//8, 1)} threads.")
+        for urls in numpy.array_split(all_urls, partitions):
+            attempts = 0
+            self.logger.info(f"Total data points collected so far: {len(all_data)}")
+            while len(urls) > 0 and attempts < max_attempts:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(multiprocessing.cpu_count()//8, 1)
+                ) as executor:
+                    # Start the load operations and mark each future with its URL
+                    future_to_url = {executor.submit(load_url, *url): url for url in urls}
+                    self.logger.info("Multithreaded urls and returned status codes:")
+                    count = 0
+                    for future in concurrent.futures.as_completed(future_to_url):
+
+                        if count % 100 == 0:
+                            self.logger.info(
+                                f"Processed {len(all_data)} / {valid_url_count} urls. "
+                                f"{len(urls)} remaining in this partition."
+                            )
+                        count += 1
+
+                        url = future_to_url[future]
+                        try:
+                            response, extra_data = future.result()
+
+                            if response.status_code != 200:
+                                self.logger.debug(
+                                    f"Url: {url[0]} ; Status code: {response.status_code}"
+                                )
+
+                            if response.status_code == 403 or response.status_code == 401: # 403 is rate limit, 404 is not found, 401 is bad credentials
+                                self.update_rate_limit(response, platform=platform)
+                                continue
+
+                            elif response.status_code == 200:
+                                try:
+                                    page_data = response.json() 
+                                    # This seems to not be working.
+                                    ### added by SPG 12/1/2021 for dealing with empty JSON pages where there
+                                    ### are no reviews.
+                                    #if not 'results' in page_data or len(page_data['results']) == 0:
+                                    #    continue  
+                                  
+                                except:
+                                    page_data = json.loads(json.dumps(response.text))
+                                    continue
+
+                                page_data = [{**data, **extra_data} for data in page_data]
+                                all_data += page_data
+
+                                try:
+                                    if 'last' in response.links and "&page=" not in url[0]:
+                                        urls += [
+                                            (url[0] + f"&page={page}", extra_data) for page in range(
+                                                2, int(response.links['last']['url'].split('=')[-1]) + 1
+                                            )
+                                        ]
+                                        # self.logger.info(f"urls boundry issue? for {urls} where they are equal to {url}.")
+
+                                        urls = numpy.delete(urls, numpy.where(urls == url), axis=0)
+                                except:
+                                    self.logger.info(f"ERROR with axis = 0 - Now attempting without setting axis for numpy.delete for {urls} where they are equal to {url}.")
+                                    urls = numpy.delete(urls, numpy.where(urls == url))
+                                    continue
+
+                            elif response.status_code == 404:
+                                urls = numpy.delete(urls, numpy.where(urls == url), axis=0)
+                                self.logger.info(f"Not found url: {url}\n")
+                            else:
+                                self.logger.info(
+                                    f"Unhandled response code: {response.status_code} {url}\n"
+                                )
+
+                        ## Added additional exception logging and a pass in this block.
+                        except Exception as e:
+                            self.logger.debug(
+                                f"{url} generated an exception: count is {count}, attemts are {attempts}."
+                            )
+                            stacker = traceback.format_exc()
+                            self.logger.debug(f"\n\n{stacker}\n\n")
+                            pass
+
+                attempts += 1
+
+        self.logger.debug(
+            f"Processed {valid_url_count} urls and got {len(all_data)} data points "
+            f"in {time.time() - start} seconds thanks to multithreading!\n"
+        )
+        return all_data
+
+
 
     def graphql_paginate(self, query, data_subjects, before_parameters=None):
         """ Paginate a GitHub GraphQL query backwards
@@ -373,9 +491,7 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                             f"Inserted Pull Request Commit: {result.inserted_primary_key}\n"
                         )
                 except Exception as e:
-                    self.logger.debug(f"pr_commit exception registered: {e}.")
-                    stacker = traceback.format_exc()
-                    self.logger.debug(f"{stacker}")
+                    self.print_traceback("pr commits model", e)
                     continue
 
         self.register_task_completion(self.task_info, self.repo_id, 'pull_request_commits')
@@ -385,7 +501,7 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
         #self.owner and self.repo are both defined in the worker base's collect method using the url of the github repo.
         pr_url = (
             f"https://api.github.com/repos/{self.owner}/{self.repo}/pulls?state=all&"
-            "direction=asc&per_page=100&page={}"
+            "direction=desc&per_page=100&page={}"
         )
 
         #Database action map is essential in order to avoid duplicates messing up the data
@@ -428,16 +544,10 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                             }
                         }, prefix='user.'
                     )
-                except Exception as e: 
-                    self.logger.debug(f"Pull Requests model failed with {e}.")
-                    stacker = traceback.format_exc()
-                    self.logger.debug(f"{stacker}")
-                    pass
-
+                except Exception as e:
+                    self.print_traceback("pull requests model", e)
             else:
                 self.logger.info("Contributor enrichment is not needed, no inserts in action map.")
-                stacker = traceback.format_exc()
-                self.logger.debug(f"{stacker}")
 
             prs_insert = []
             try: 
@@ -445,7 +555,7 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                 {
                     'repo_id': self.repo_id,
                     'pr_url': pr['url'],
-                    'pr_src_id': pr['id'],
+                    'pr_src_id': int(str(pr['id']).encode(encoding='UTF-8').decode(encoding='UTF-8')),#1-22-2022 inconsistent casting; sometimes int, sometimes float in bulk_insert 
                     'pr_src_node_id': pr['node_id'],  ## 9/20/2021 - This was null. No idea why.
                     'pr_html_url': pr['html_url'],
                     'pr_diff_url': pr['diff_url'],
@@ -467,10 +577,10 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                     ) else None,
                     'pr_created_at': pr['created_at'],
                     'pr_updated_at': pr['updated_at'],
-                    'pr_closed_at': s.sql.expression.null() if not (  # This had to be changed because "None" is JSON. SQL requires NULL SPG 11/28/2021
+                    'pr_closed_at': None if not (  
                         pr['closed_at']
                     ) else pr['closed_at'],
-                    'pr_merged_at': None if not (  # This had to be changed because "None" is JSON. SQL requires NULL
+                    'pr_merged_at': None if not (  
                         pr['merged_at']
                     ) else pr['merged_at'],
                     'pr_merge_commit_sha': pr['merge_commit_sha'],
@@ -498,14 +608,8 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                     'data_source': 'GitHub API'
                 } for pr in inc_source_prs['insert']
                 ]
-            except Exception as e: 
-                self.logger.debug(f"Pull Requests model failed with {e}.")
-                stacker = traceback.format_exc()
-                self.logger.debug(f"{stacker}")
-                pass 
-
-            # Removed due to error 11/18/2021 : and 'title' in pr['milestone']
-
+            except Exception as e:
+                self.print_traceback("Extracting data from source in pr model", e)
             #The b_pr_src_id bug comes from here
             '''
             9/20/2021: Put the method definition for bulk insert here for reference. The method 
@@ -537,7 +641,8 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                 self.bulk_insert(
                     self.pull_requests_table,
                     update=inc_source_prs['update'], unique_columns=action_map['insert']['augur'],
-                    insert=prs_insert, update_columns=['pr_src_state', 'pr_closed_at', 'pr_updated_at', 'pr_merged_at']
+                    insert=prs_insert, update_columns=['pr_src_state', 'pr_closed_at', 'pr_updated_at', 'pr_merged_at'],
+                    convert_float_int=True
                 )
 
                 source_data = inc_source_prs['insert'] + inc_source_prs['update']
@@ -591,6 +696,13 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
 
         return pk_source_prs
 
+    def print_traceback(self, exception_message, exception, debug_log=True):
+
+        if debug_log:
+            self.logger.debug(f"{exception_message}. ERROR: {exception}", exc_info=sys.exc_info())
+        else:
+            self.logger.info(f"{exception_message}. ERROR: {exception}", exc_info=sys.exc_info())
+
     def pull_requests_model(self, entry_info, repo_id):
         """Pull Request data collection function. Query GitHub API for PhubRs.
 
@@ -609,51 +721,35 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
 
         try: 
             pk_source_prs = self._get_pk_source_prs()
-        except Exception as e: 
-            self.logger.debug(f"Pull Requests model failed with {e}.")
-            stacker = traceback.format_exc()
-            self.logger.debug(f"{stacker}")
-            pass 
-
-
+        except Exception as e:
+            self.print_traceback("Pull Requests model", e)
         #self.write_debug_data(pk_source_prs, 'pk_source_prs')
 
         if pk_source_prs:
             try:
                 self.pull_request_comments_model(pk_source_prs)
                 self.logger.info(f"Pull request comments model.")
-            except Exception as e: 
-                self.logger.debug(f"PR comments model failed on {e}. exception registered.")
-                stacker = traceback.format_exc()
-                self.logger.debug(f"{stacker}") 
-                pass
+            except Exception as e:
+                self.print_traceback("PR comments model", e)
             finally:
                 try: 
                     self.pull_request_events_model(pk_source_prs)
                     self.logger.info(f"Pull request events model.")
-                except Exception as e: 
-                    self.logger.debug(f"PR events model failed on {e}. exception registered for pr_step.")
-                    stacker = traceback.format_exc()
-                    self.logger.debug(f"{stacker}")  
-                    pass 
-                finally: 
+                except Exception as e:
+                    self.print_traceback("PR events model", e)
+
+                finally:
                     try: 
                         self.logger.info(f"Pull request reviews model factored out for now due to speed.")
-                    except Exception as e: 
-                        self.logger.debug(f"PR reviews model, which is factored out for now due to speed, somehow managed to fail on {e}. exception registered for pr_step.")
-                        stacker = traceback.format_exc()
-                        self.logger.debug(f"{stacker}")  
-                        pass 
-                    finally: 
+                    except Exception as e:
+                        self.print_traceback("PR reviews model, which is factored out for now due to speed", e)
+                    finally:
                         try:
                             self.pull_request_nested_data_model(pk_source_prs)
                             self.logger.info(f"Pull request nested data model.")
-                        except Exception as e: 
-                            self.logger.debug(f"PR nested model failed on {e}. exception registered for pr_step.")
-                            stacker = traceback.format_exc()
-                            self.logger.debug(f"{stacker}")
-                            pass  
-                        finally: 
+                        except Exception as e:
+                            self.print_traceback("PR nested model", e)
+                        finally:
                             self.logger.debug("finished running through four models.")
 
         self.register_task_completion(self.task_info, self.repo_id, 'pull_requests')
@@ -721,19 +817,14 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                         'platform_node_id': comment['node_id']
                     } for comment in inc_pr_comments['insert']
                 ]
-            except Exception as e: 
-                self.logger.debug(f"Comments model issue/error: {e}. exception registered.")
-                stacker = traceback.format_exc()
-                self.logger.debug(f"{stacker}")
-                pass
+            except Exception as e:
+                self.print_traceback("Creting list of pr comments", e)
+
             try:
                 self.bulk_insert(self.message_table, insert=pr_comments_insert, 
                     unique_columns=comment_action_map['insert']['augur'])
-            except Exception as e: 
-                self.logger.debug(f"PR comments data model failed on {e}. exception registered.")
-                stacker = traceback.format_exc()
-                self.logger.debug(f"{stacker}")
-                pass
+            except Exception as e:
+                self.print_traceback("Bulk inserting pr comments", e)
             finally:
                     try:
                         c_pk_source_comments = self.enrich_data_primary_keys(
@@ -781,18 +872,10 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
 
                         self.bulk_insert(self.pull_request_message_ref_table, insert=pr_message_ref_insert,
                             unique_columns=comment_ref_action_map['insert']['augur'])
-
                     except Exception as e:
-
-                        self.logger.info(f"message inserts failed with: {e}.")
-                        stacker = traceback.format_exc()
-                        self.logger.debug(f"{stacker}")
-                        pass
-
+                        self.print_traceback("Gathering and inserting data into pr mesaage ref table", e)
                     finally:
-
                         self.logger.info("Finished message insert section.")
-
         # TODO: add relational table so we can include a where_clause here
         try: 
             pr_comments = self.paginate_endpoint(
@@ -813,16 +896,12 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                 stagger=True,
                 insertion_method=pr_comments_insert
             )
-
             pr_comments_insert(pr_comments,comment_action_map,comment_ref_action_map)
             self.logger.info(f"comments inserted for repo_id: {self.repo_id}")
             return 
         except Exception as e:
-            self.logger.info(f"exception registered in paginate endpoint for issue comments: {e}")
-            stacker = traceback.format_exc()
-            self.logger.debug(f"{stacker}")
-            pass 
-        finally: 
+            self.print_traceback("Staggered paginate endpoint for pr comments", e)
+        finally:
             self.logger.debug(f"Pull request messages and message refs worked without exception for {self.repo_id}")
 
     def pull_request_events_model(self, pk_source_prs=[]):
@@ -892,10 +971,8 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
         ]
         try: 
             self.bulk_insert(self.pull_request_events_table, insert=pr_events_insert, unique_columns=event_action_map['insert']['augur'])
-        except Exception as e: 
-            self.logger.debug(f"PR events data model failed on {e}. exception registered.")
-            stacker = traceback.format_exc()
-            self.logger.debug(f"{stacker}")           
+        except Exception as e:
+            self.print_traceback("Bulk insert pr events", e)
 
     def pull_request_nested_data_model(self, pk_source_prs=[]):
         try: 
@@ -907,13 +984,8 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
             else: 
                 #prdata = json.loads(json.dumps(pk_source_prs))
                 self.logger.debug("nested model loaded.") 
-
-        except Exception as e: 
-
-            self.logger.debug(f'gettign source prs failed for nested model on {e}.')
-            pass 
-
-
+        except Exception as e:
+            self.print_traceback("Getting source prs in nested pr model", e)
         labels_all = []
         reviewers_all = []
         assignees_all = []
@@ -1123,10 +1195,8 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                         ]  # reverted above to see if it works with other fixes.
                         self.bulk_insert(self.pull_request_meta_table, insert=meta_insert)
 
-                except Exception as e: 
-                    self.logger.debug(f"Nested Model error at loop {pr_nested_loop} : {e}.")
-                    stacker = traceback.format_exc()
-                    self.logger.debug(f"{stacker}")   
+                except Exception as e:
+                    self.print_traceback(f"Nested model error at loop {pr_nested_loop}", e)
                     continue   
 
     def query_pr_repo(self, pr_repo, pr_repo_type, pr_meta_id):
@@ -1178,7 +1248,7 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
                 self.logger.info(
                     f"Finished adding PR {pr_repo_type} Repo data for PR with id {self.pr_id_inc}"
                 )
-        except Exception as e: 
+        except Exception as e:
             self.logger.debug(f"repo exception registerred for PRs: {e}")
             self.logger.debug(f"Nested Model error at loop {pr_nested_loop} : {e}.")
             stacker = traceback.format_exc()
