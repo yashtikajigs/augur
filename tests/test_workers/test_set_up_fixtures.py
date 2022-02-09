@@ -30,7 +30,7 @@ def insert_sql_file(database_connection, fileString):
     for command in sqlCommands:
         toExecute = s.sql.text(command)
         try:
-            database_connection.read_sql(
+            pd.read_sql(
                 toExecute, database_connection, params={})
         except Exception as e:
             print(f"Error when inserting data: {e}")
