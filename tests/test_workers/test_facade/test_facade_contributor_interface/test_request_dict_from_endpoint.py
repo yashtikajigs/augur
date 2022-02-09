@@ -1,7 +1,7 @@
 from tests.test_workers.worker_persistance.util_persistance import *
 
-def test_request_dict_from_endpoint_good_values(database_connection):
-    dummy = DummyFullWorker(database_connection)
+def test_request_dict_from_endpoint_good_values(database_connection_string):
+    dummy = DummyFullWorker(database_connection_string)
     
     good_values = [
         'https://api.github.com/users/IsaacMilarky',
@@ -17,8 +17,8 @@ def test_request_dict_from_endpoint_good_values(database_connection):
             raise AssertionError
 
 
-def test_request_dict_from_endpoint_bad_values(database_connection):
-    dummy = DummyFullWorker(database_connection)
+def test_request_dict_from_endpoint_bad_values(database_connection_string):
+    dummy = DummyFullWorker(database_connection_string)
     
     bad_values = [
         'https://api.github.com/',
