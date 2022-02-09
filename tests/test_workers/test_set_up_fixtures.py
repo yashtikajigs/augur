@@ -93,7 +93,7 @@ def database_connection_string():
             #Kill if not able to get a port
             if tries <= 0:
                 print("Not able to get a port!")
-                raise docker.errors.APIError
+                raise RuntimeError
             
             continue
         
