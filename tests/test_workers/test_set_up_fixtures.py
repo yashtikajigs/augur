@@ -49,7 +49,7 @@ def insert_json_file(database_connection, fileString, table):
 
 # database connection
 @pytest.fixture
-def database_connection():
+def database_connection_string():
     # Create client to docker daemon
     client = docker.from_env()
 
@@ -99,16 +99,22 @@ def database_connection():
 
     time.sleep(10)
 
-    # Get a database connection object from postgres to test connection and pass to test when ready
-    db = poll_database_connection(DB_STR)
+    #Example of how to create a new connection from the DB_STR
+    #db = poll_database_connection(DB_STR)
 
     # Setup complete, return the database object
-    yield db
+    yield DB_STR
 
     # Cleanup the docker container by killing it.
     databaseContainer.kill()
     # Remove the name
     databaseContainer.remove()
+
+@pytest.fixture
+def database_connection(database_connection_string):
+    db = poll_database_connection(database_connection_string)
+    
+    return db  
 
 # Define a dummy worker class that gets the methods we need without running super().__init__
 
@@ -122,10 +128,12 @@ class DummyPersistance(Persistant):
 
 # Dummy for the rest of the worker's methods and functionality including the facade g
 class DummyFullWorker(ContributorInterfaceable):
-    def __init__(self, database_connection, config={}):
+    def __init__(self, database_connection_string, config={}):
 
+        self.db_str = database_connection_string
+        
         # Get a way to connect to the docker database.
-        self.db = database_connection
+        self.db = poll_database_connection(database_connection_string)
         self.logger = logging.getLogger()
 
         worker_type = "contributor_interface"
@@ -162,9 +170,7 @@ class DummyFullWorker(ContributorInterfaceable):
     # This mirros the functionality of the definition found in worker_persistance to make
     # github related function calls much much easier to test.
     def initialize_database_connections(self):
-        DB_STR = 'postgresql://{}:{}@{}:{}/{}'.format(
-            "augur", "augur", "172.17.0.1", 5400, "test"
-        )
+        DB_STR = self.db_str
 
         self.db_schema = 'augur_data'
         self.helper_schema = 'augur_operations'
