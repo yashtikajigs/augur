@@ -172,6 +172,8 @@ class Housekeeper:
     def prep_jobs(self):
         for index, job in enumerate(self.jobs, start=1):
             self.printProgressBar(index, len(self.jobs), 'Preparing housekeeper jobs:', 'Complete', 1, 50)
+
+            # Prepare the jobs if a repo_group_id or multiple repo_ids are specified
             if 'repo_group_id' in job or 'repo_ids' in job:
                 # If RG id is 0 then it just means to query all repos
 
@@ -274,6 +276,8 @@ class Housekeeper:
                     job['repos'] = []
                     continue
 
+                # This section of code is responsible for determining the order in which the
+                # repos in the repo_group should be completed by the workers (end of this code block noted below)
                 if 'starting_repo_id' in job:
                     last_id = job['starting_repo_id']
                 else:
@@ -331,21 +335,23 @@ class Housekeeper:
                     reorganized_repos[0]['focused_task'] = 1
                 
                 job['repos'] = reorganized_repos
+            # End of code that organizes the repos in a given order
 
+            # Prepare the job if a single repo_id is specified
             elif 'repo_id' in job:
                 job['repo_group_id'] = None
                 repoUrlSQL = s.sql.text("""
                     SELECT repo_git, repo_id FROM repo WHERE repo_id = {}
                 """.format(job['repo_id']))
 
-                rs = pd.read_sql(repoUrlSQL, self.db, params={})
+                repo_data = pd.read_sql(repoUrlSQL, self.db, params={})
 
                 if 'all_focused' in job:
-                    rs['focused_task'] = job['all_focused']
+                    repo_data['focused_task'] = job['all_focused']
 
-                rs = rs.to_dict('records')
+                repo_data = repo_data.to_dict('records')
 
-                job['repos'] = rs
+                job['repos'] = repo_data
             # time.sleep(120)
 
     def update_url_redirects(self):
