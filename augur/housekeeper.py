@@ -32,6 +32,7 @@ class Housekeeper:
         self.broker_host = augur_app.config.get_value("Server", "host")
         self.broker_port = augur_app.config.get_value("Server", "port")
         self.broker = broker
+        self.workers = deepcopy(augur_app.config.get_section("Workers"))
 
         self.db = augur_app.database
         self.helper_db = augur_app.operations_database
@@ -63,13 +64,13 @@ class Housekeeper:
         self.augur_logging.initialize_housekeeper_logging_listener()
         logger.info("Scheduling update processes")
         for job in self.jobs:
-            process = Process(target=self.updater_process, name=job["model"], args=(self.broker_host, self.broker_port, self.broker, job, (self.augur_logging.housekeeper_job_config, self.augur_logging.get_config())))
+            process = Process(target=self.updater_process, name=job["model"], args=(self.broker_host, self.broker_port, self.broker, job, (self.augur_logging.housekeeper_job_config, self.augur_logging.get_config()), self.workers))
             self._processes.append(process)
             process.start()
 
 
     @staticmethod
-    def updater_process(broker_host, broker_port, broker, job, logging_config):
+    def updater_process(broker_host, broker_port, broker, job, logging_config, worker_info):
         """
         Controls a given plugin's update process
 
@@ -88,14 +89,29 @@ class Housekeeper:
             repo_group_id = None
             logger.info('Housekeeper spawned {} model updater process for repo ids {}'.format(job['model'], job['repo_ids']))
 
+
+
         try:
             compatible_worker_found = False
             # Waiting for compatible worker
+            prints = []
             while True:
                 if not compatible_worker_found:
+                    number_of_workers_found = 0
                     for worker in list(broker._getvalue().keys()):
                         if job['model'] in broker[worker]['models'] and job['given'] in broker[worker]['given']:
-                            compatible_worker_found = True
+                            number_of_workers_found = number_of_workers_found + 1
+
+                            worker_name = worker.split('.')[1]
+                            num_workers = worker_info[worker_name]['workers']
+
+
+                            if number_of_workers_found not in prints:
+                                logger.info(f"{int(number_of_workers_found / num_workers * 100)}% of {worker_name} workers started")
+                                prints.append(number_of_workers_found)
+
+                            if number_of_workers_found == num_workers:
+                                compatible_worker_found = True
                     time.sleep(10)
                     continue
 
@@ -187,13 +203,9 @@ class Housekeeper:
                 elif 'repo_ids' in job:
                     where_condition = '{} repo.repo_id IN ({})'.format(where_and, ",".join(str(id) for id in job['repo_ids']))
 
-                repo_url_sql = s.sql.text(""" 
-                        SELECT repo_git, repo.repo_id, count(*) as commit_count 
-                        FROM augur_data.repo left outer join augur_data.commits 
-                            on repo.repo_id = commits.repo_id 
-                        {}
-                        group by repo.repo_id ORDER BY commit_count {}
-                    """.format(where_condition, job['order']))
+
+                repo_url_sql = None
+
 
                 if job['model'] == 'pull_requests':
                     repo_url_sql = s.sql.text("""
@@ -269,6 +281,14 @@ class Housekeeper:
                     repo_url_sql = s.sql.text(""" 
                                             SELECT repo_git, repo_id FROM repo {} ORDER BY repo_id ASC
                                         """.format(where_condition))
+                else:
+                    repo_url_sql = s.sql.text(""" 
+                            SELECT repo_git, repo.repo_id, count(*) as commit_count 
+                            FROM augur_data.repo left outer join augur_data.commits 
+                                on repo.repo_id = commits.repo_id 
+                            {}
+                            group by repo.repo_id ORDER BY commit_count {}
+                        """.format(where_condition, job['order']))
                 
                 reorganized_repos = pd.read_sql(repo_url_sql, self.db, params={})
                 if len(reorganized_repos) == 0:
