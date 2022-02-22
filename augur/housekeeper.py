@@ -174,83 +174,99 @@ class Housekeeper:
             self.printProgressBar(index, len(self.jobs), 'Preparing housekeeper jobs:', 'Complete', 1, 50)
             if 'repo_group_id' in job or 'repo_ids' in job:
                 # If RG id is 0 then it just means to query all repos
-                where_and = 'AND' if job['model'] == 'issues' and 'repo_group_id' in job else 'WHERE'
-                where_condition = '{} repo_group_id = {}'.format(where_and, job['repo_group_id']
-                    ) if 'repo_group_id' in job and job['repo_group_id'] != 0 else '{} repo.repo_id IN ({})'.format(
-                    where_and, ",".join(str(id) for id in job['repo_ids'])) if 'repo_ids' in job else ''
-                repo_url_sql = s.sql.text("""
-                    SELECT 
-                        repo.repo_id,
-                        repo.repo_git,
-                        recent_info.pull_request_count,
-                        collected_pr_count,
-                        ( repo_info.pull_request_count - pr_count.collected_pr_count ) AS pull_requests_missing 
-                    FROM
-                        augur_data.repo
-                        LEFT OUTER JOIN ( SELECT COUNT ( * ) AS collected_pr_count, repo_id FROM pull_requests GROUP BY repo_id ) pr_count ON pr_count.repo_id = repo.repo_id
-                        LEFT OUTER JOIN ( SELECT repo_id, MAX(pull_request_count) as pull_request_count,  MAX ( data_collection_date ) AS last_collected FROM augur_data.repo_info 
-                            GROUP BY repo_id ) recent_info ON recent_info.repo_id = pr_count.repo_id
-                        LEFT OUTER JOIN repo_info ON recent_info.repo_id = repo_info.repo_id 
-                        AND repo_info.data_collection_date = recent_info.last_collected 
-                        and recent_info.pull_request_count >=1 
-                        and recent_info.pull_request_count is not null
-                        {}
-                    GROUP BY
-                        repo.repo_id,
-                        recent_info.pull_request_count,
-                        pr_count.collected_pr_count,
-                        repo_info.pull_request_count
-                    ORDER BY
-                        pull_requests_missing DESC NULLS LAST;
-                    """.format(where_condition)) if job['model'] == 'pull_requests' else s.sql.text("""
-                        SELECT
-                            * 
-                        FROM
-                            (
-                                ( SELECT repo_git, repo.repo_id, issues_enabled, COUNT ( * ) AS meta_count 
-                                FROM repo left outer join repo_info on repo.repo_id = repo_info.repo_id
-                                --WHERE issues_enabled = 'true' 
-                                GROUP BY repo.repo_id, issues_enabled 
-                                ORDER BY repo.repo_id ) zz
-                                LEFT OUTER JOIN (
-                                SELECT repo.repo_id,
-                                    repo.repo_name,
-                                    b.issues_count,
-                                    d.repo_id AS issue_repo_id,
-                                    e.last_collected,
-                                    COUNT ( * ) AS issues_collected_count,
-                                    (
-                                    b.issues_count - COUNT ( * )) AS issues_missing,
-                                    ABS (
-                                    CAST (( COUNT ( * )) AS DOUBLE PRECISION ) / CAST ( b.issues_count + 1 AS DOUBLE PRECISION )) AS ratio_abs,
-                                    (
-                                    CAST (( COUNT ( * )) AS DOUBLE PRECISION ) / CAST ( b.issues_count + 1 AS DOUBLE PRECISION )) AS ratio_issues 
-                                FROM
-                                    augur_data.repo left outer join  
-                                    augur_data.pull_requests d on d.repo_id = repo.repo_id left outer join 
-                                    augur_data.repo_info b on d.repo_id = b.repo_id left outer join
-                                    ( SELECT repo_id, MAX ( data_collection_date ) AS last_collected FROM augur_data.repo_info GROUP BY repo_id ORDER BY repo_id ) e 
-                                                                        on e.repo_id = d.repo_id and b.data_collection_date = e.last_collected
-                                WHERE d.pull_request_id IS NULL
-                                {}
-                                GROUP BY
-                                    repo.repo_id,
-                                    d.repo_id,
-                                    b.issues_count,
-                                    e.last_collected 
-                                ORDER BY ratio_abs 
-                                ) yy ON zz.repo_id = yy.repo_id 
-                            ) D
-                        ORDER BY ratio_abs NULLS FIRST
-                    """.format(where_condition)) if job['model'] == 'issues' and 'repo_group_id' in job else s.sql.text(""" 
-                        SELECT repo_git, repo_id FROM repo {} ORDER BY repo_id ASC
-                    """.format(where_condition)) if 'order' not in job else s.sql.text(""" 
+
+                where_and = 'ELSE'
+                if job['model'] == 'issues' and 'repo_group_id' in job:
+                    where_and = 'AND'
+
+                where_condition = ''
+                if 'repo_group_id' in job and job['repo_group_id'] != 0:
+                    where_condition = '{} repo_group_id = {}'.format(where_and, job['repo_group_id'])
+                elif 'repo_ids' in job:
+                    where_condition = '{} repo.repo_id IN ({})'.format(where_and, ",".join(str(id) for id in job['repo_ids']))
+
+                repo_url_sql = s.sql.text(""" 
                         SELECT repo_git, repo.repo_id, count(*) as commit_count 
                         FROM augur_data.repo left outer join augur_data.commits 
                             on repo.repo_id = commits.repo_id 
                         {}
                         group by repo.repo_id ORDER BY commit_count {}
                     """.format(where_condition, job['order']))
+
+                if job['model'] == 'pull_requests':
+                    repo_url_sql = s.sql.text("""
+                        SELECT 
+                            repo.repo_id,
+                            repo.repo_git,
+                            recent_info.pull_request_count,
+                            collected_pr_count,
+                            ( repo_info.pull_request_count - pr_count.collected_pr_count ) AS pull_requests_missing 
+                        FROM
+                            augur_data.repo
+                            LEFT OUTER JOIN ( SELECT COUNT ( * ) AS collected_pr_count, repo_id FROM pull_requests GROUP BY repo_id ) pr_count ON pr_count.repo_id = repo.repo_id
+                            LEFT OUTER JOIN ( SELECT repo_id, MAX(pull_request_count) as pull_request_count,  MAX ( data_collection_date ) AS last_collected FROM augur_data.repo_info 
+                                GROUP BY repo_id ) recent_info ON recent_info.repo_id = pr_count.repo_id
+                            LEFT OUTER JOIN repo_info ON recent_info.repo_id = repo_info.repo_id 
+                            AND repo_info.data_collection_date = recent_info.last_collected 
+                            and recent_info.pull_request_count >=1 
+                            and recent_info.pull_request_count is not null
+                            {}
+                        GROUP BY
+                            repo.repo_id,
+                            recent_info.pull_request_count,
+                            pr_count.collected_pr_count,
+                            repo_info.pull_request_count
+                        ORDER BY
+                            pull_requests_missing DESC NULLS LAST;
+                                        """.format(where_condition))
+
+                elif job['model'] == 'issues' and 'repo_group_id' in job:
+                    repo_url_sql = s.sql.text("""
+                                            SELECT
+                                                * 
+                                            FROM
+                                                (
+                                                    ( SELECT repo_git, repo.repo_id, issues_enabled, COUNT ( * ) AS meta_count 
+                                                    FROM repo left outer join repo_info on repo.repo_id = repo_info.repo_id
+                                                    --WHERE issues_enabled = 'true' 
+                                                    GROUP BY repo.repo_id, issues_enabled 
+                                                    ORDER BY repo.repo_id ) zz
+                                                    LEFT OUTER JOIN (
+                                                    SELECT repo.repo_id,
+                                                        repo.repo_name,
+                                                        b.issues_count,
+                                                        d.repo_id AS issue_repo_id,
+                                                        e.last_collected,
+                                                        COUNT ( * ) AS issues_collected_count,
+                                                        (
+                                                        b.issues_count - COUNT ( * )) AS issues_missing,
+                                                        ABS (
+                                                        CAST (( COUNT ( * )) AS DOUBLE PRECISION ) / CAST ( b.issues_count + 1 AS DOUBLE PRECISION )) AS ratio_abs,
+                                                        (
+                                                        CAST (( COUNT ( * )) AS DOUBLE PRECISION ) / CAST ( b.issues_count + 1 AS DOUBLE PRECISION )) AS ratio_issues 
+                                                    FROM
+                                                        augur_data.repo left outer join  
+                                                        augur_data.pull_requests d on d.repo_id = repo.repo_id left outer join 
+                                                        augur_data.repo_info b on d.repo_id = b.repo_id left outer join
+                                                        ( SELECT repo_id, MAX ( data_collection_date ) AS last_collected FROM augur_data.repo_info GROUP BY repo_id ORDER BY repo_id ) e 
+                                                                                            on e.repo_id = d.repo_id and b.data_collection_date = e.last_collected
+                                                    WHERE d.pull_request_id IS NULL
+                                                    {}
+                                                    GROUP BY
+                                                        repo.repo_id,
+                                                        d.repo_id,
+                                                        b.issues_count,
+                                                        e.last_collected 
+                                                    ORDER BY ratio_abs 
+                                                    ) yy ON zz.repo_id = yy.repo_id 
+                                                ) D
+                                            ORDER BY ratio_abs NULLS FIRST
+                                        """.format(where_condition))
+
+                elif 'order' not in job:
+                    repo_url_sql = s.sql.text(""" 
+                                            SELECT repo_git, repo_id FROM repo {} ORDER BY repo_id ASC
+                                        """.format(where_condition))
                 
                 reorganized_repos = pd.read_sql(repo_url_sql, self.db, params={})
                 if len(reorganized_repos) == 0:
