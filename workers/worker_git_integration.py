@@ -1,11 +1,12 @@
 # Get everything that the base depends on.
-import math
-
 from numpy.lib.utils import source
 from workers.worker_base import *
 import sqlalchemy as s
 import time
 import math
+
+from sqlalchemy.dialects.postgresql import insert
+
 
 # This is a worker base subclass that adds the ability to query github/gitlab with the api key
 
