@@ -1681,11 +1681,12 @@ class WorkerGitInterfaceable(Worker):
             self.logger.info("Must be list of dicts")
             return
 
-        stmt = insert(table).values(data)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=natural_keys, set_=data)
-        result = self.db.execute(stmt)
-        return result.is_insert
+        table_stmt = insert(table)
+        for value in data:
+            insert_stmt = table_stmt.values(value)
+            insert_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=natural_keys, set_=dict(value))
+            result = self.db.execute(insert_stmt)
 
     def paginate_endpoint_new(self, url, table, extract_data_method, natural_key, platform='github'):
 
