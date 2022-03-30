@@ -595,7 +595,7 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
 
         gh_merge_fields = ['id']
         augur_merge_fields = ['pr_src_id']
-        self.pk_source_prs += self.enrich_data_primary_keys(source_prs, self.pull_requests_table,
+        self.pk_source_prs += self.enrich_data_primary_keys(pr_data, self.pull_requests_table,
                                                             gh_merge_fields, augur_merge_fields, in_memory=True)
 
         return source_prs
