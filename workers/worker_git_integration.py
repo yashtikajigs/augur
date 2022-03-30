@@ -1549,3 +1549,101 @@ class WorkerGitInterfaceable(Worker):
             'update': need_update,
             'all': all_data
         }
+
+    def paginate_endpoint_new(self, url, table, extract_data_method, natural_key, platform='github'):
+
+        page_number = 1
+
+        # Stores sum of page data
+        all_data = []
+
+        # Block to handle page queries and retry at least 10 times
+        while True:
+
+            # Multiple attempts to hit endpoint
+            num_attempts = 0
+            success = False
+            while num_attempts < 10:
+
+                url = url.format(page_number)
+                self.logger.info(f"Hitting endpoint: {url}...\n")
+                try:
+                    response = requests.get(url=url, headers=self.headers)
+                except TimeoutError as e:
+                    num_attempts += 1
+                    self.logger.info(
+                        "Request timed out. Sleeping 10 seconds and trying again...\n")
+                    time.sleep(10)
+                    continue
+
+                # update rate limit
+                self.update_rate_limit(response, platform=platform)
+
+                try:
+                    page_data = response.json()
+                except:
+                    page_data = json.loads(json.dumps(response.text))
+
+                if type(page_data) == list:
+                    success = True
+                    break
+                elif type(page_data) == dict:
+                    self.logger.info(
+                        "Request returned a dict: {}\n".format(page_data))
+                    if page_data['message'] == "Not Found":
+                        self.logger.info(
+                            "Github repo was not found or does not exist for endpoint: "
+                            f"{url.format(page_number)}\n"
+                        )
+                        break
+                    if "You have exceeded a secondary rate limit. Please wait a few minutes before you try again" in page_data['message']:
+                        num_attempts -= 1
+                        self.logger.info(
+                            '\n\n\n\nSleeping for 100 seconds due to secondary rate limit issue.\n\n\n\n')
+                        time.sleep(100)
+                    if "You have triggered an abuse detection mechanism." in page_data['message']:
+                        num_attempts -= 1
+                        self.update_rate_limit(
+                            response, temporarily_disable=True, platform=platform)
+                    if page_data['message'] == "Bad credentials":
+                        self.logger.info(
+                            "\n\n\n\n\n\n\n POSSIBLY BAD TOKEN \n\n\n\n\n\n\n")
+                        self.update_rate_limit(
+                            response, bad_credentials=True, platform=platform)
+                elif type(page_data) == str:
+                    self.logger.info(
+                        f"Warning! page_data was string: {page_data}\n")
+                    if "<!DOCTYPE html>" in page_data:
+                        self.logger.info(
+                            "HTML was returned, trying again...\n")
+                    elif len(page_data) == 0:
+                        self.logger.info("Empty string, trying again...\n")
+                    else:
+                        try:
+                            page_data = json.loads(page_data)
+                            success = True
+                            break
+                        except:
+                            pass
+                num_attempts += 1
+            if not success:
+                break
+
+            page_number += 1
+
+            if len(page_data) == 0:
+                self.logger.info(
+                    "Response was empty, breaking from pagination.\n")
+                break
+
+            self.logger.info(f"Length of page data: {len(page_data)}")
+
+            data_to_insert = extract_data_method(page_data)
+
+            self.logger.info(f"Length of extracted data: {len(page_data)}")
+
+            self.insert_data(data_to_insert, table, natural_key)
+
+            all_data += page_data
+
+        return all_data
