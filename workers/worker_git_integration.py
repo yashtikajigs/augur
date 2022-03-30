@@ -1703,10 +1703,11 @@ class WorkerGitInterfaceable(Worker):
             success = False
             while num_attempts < 10:
 
-                url = url.format(page_number)
-                self.logger.info(f"Hitting endpoint: {url}...\n")
+                self.logger.info(
+                    f"Hitting endpoint: {url.format(page_number)}...\n")
                 try:
-                    response = requests.get(url=url, headers=self.headers)
+                    response = requests.get(url=url.format(
+                        page_number), headers=self.headers)
                 except TimeoutError as e:
                     num_attempts += 1
                     self.logger.info(
@@ -1767,7 +1768,7 @@ class WorkerGitInterfaceable(Worker):
             if not success:
                 break
 
-            page_number += 1
+            page_number = page_number + 1
 
             if len(page_data) == 0:
                 self.logger.info(
