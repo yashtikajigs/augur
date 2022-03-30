@@ -593,12 +593,16 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
         pr_data = self.paginate_endpoint_new(
             pr_url, table=self.pull_requests_table, extract_data_method=extract_pr_data, natural_key=natural_key)
 
+        self.logger.info(f"Length of pr_data: {len(pr_data)}")
+
         gh_merge_fields = ['id']
         augur_merge_fields = ['pr_src_id']
-        self.pk_source_prs += self.enrich_data_primary_keys(pr_data, self.pull_requests_table,
-                                                            gh_merge_fields, augur_merge_fields, in_memory=True)
+        pk_enriched_prs = self.enrich_data_primary_keys(pr_data, self.pull_requests_table,
+                                                        gh_merge_fields, augur_merge_fields, in_memory=True)
 
-        return pr_data
+        self.logger.info(f"pk_enriched_pr: {str(pk_enriched_prs[0])}")
+
+        return pk_enriched_prs
 
         # Database action map is essential in order to avoid duplicates messing up the data
         # 9/20/2021: SPG added closed_at, updated_at, and merged_at to the update map.
