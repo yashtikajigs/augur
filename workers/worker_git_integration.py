@@ -1684,7 +1684,7 @@ class WorkerGitInterfaceable(Worker):
         stmt = insert(table).values(data)
         stmt = stmt.on_conflict_do_update(
             index_elements=natural_keys, set_=dict(active=True))
-        result = engine.execute(stmt)
+        result = self.db.execute(stmt)
         return result.is_insert
 
     def paginate_endpoint_new(self, url, table, extract_data_method, natural_key, platform='github'):
