@@ -598,7 +598,7 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
         self.pk_source_prs += self.enrich_data_primary_keys(pr_data, self.pull_requests_table,
                                                             gh_merge_fields, augur_merge_fields, in_memory=True)
 
-        return source_prs
+        return pr_data
 
         # Database action map is essential in order to avoid duplicates messing up the data
         # 9/20/2021: SPG added closed_at, updated_at, and merged_at to the update map.
