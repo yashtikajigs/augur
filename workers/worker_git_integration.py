@@ -1683,7 +1683,7 @@ class WorkerGitInterfaceable(Worker):
 
         stmt = insert(table).values(data)
         stmt = stmt.on_conflict_do_update(
-            index_elements=natural_keys, set_=dict(active=True))
+            index_elements=natural_keys, set_=dict(data))
         result = self.db.execute(stmt)
         return result.is_insert
 
