@@ -590,8 +590,13 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
 
         natural_key = ['repo_id', 'pr_src_id']
 
-        source_prs = self.paginate_endpoint_new(
+        pr_data = self.paginate_endpoint_new(
             pr_url, table=self.pull_requests_table, extract_data_method=extract_pr_data, natural_key=natural_key)
+
+        gh_merge_fields = ['id']
+        augur_merge_fields = ['pr_src_id']
+        self.pk_source_prs += self.enrich_data_primary_keys(source_prs, self.pull_requests_table,
+                                                            gh_merge_fields, augur_merge_fields, in_memory=True)
 
         return source_prs
 
