@@ -588,7 +588,7 @@ class GitHubPullRequestWorker(WorkerGitInterfaceable):
             "direction=desc&per_page=100&page={}"
         )
 
-        natural_key = ['pr_src_id']
+        natural_key = ['repo_id', 'pr_src_id']
 
         source_prs = self.paginate_endpoint_new(
             pr_url, table=self.pull_requests_table, extract_data_method=extract_pr_data, natural_key=natural_key)
