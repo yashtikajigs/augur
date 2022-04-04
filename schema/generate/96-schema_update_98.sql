@@ -35,7 +35,6 @@ ALTER TABLE "augur_data"."issues"
   DROP CONSTRAINT IF EXISTS "unique-issue",
   ADD CONSTRAINT "unique-issue" UNIQUE ("repo_id", "gh_issue_id");
 
-
 ALTER TABLE "augur_data"."pull_request_reviews" 
   DROP CONSTRAINT "fk_pull_request_reviews_pull_requests_1",
   ADD CONSTRAINT "fk_pull_request_reviews_pull_requests_1" FOREIGN KEY ("pull_request_id") REFERENCES "augur_data"."pull_requests" ("pull_request_id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -72,6 +71,6 @@ ALTER TABLE "augur_data"."repo_labor"
 
 
 --
-update "augur_operations"."augur_settings" set value = 97
+update "augur_operations"."augur_settings" set value = 98
   where setting = 'augur_data_version'; 
 COMMIT; 
