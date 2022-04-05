@@ -15,6 +15,7 @@ botocore==1.20.92
 bs4==0.0.1
 cachetools==4.2.2
 certifi==2021.5.30
+celery==5.2.6
 chardet==3.0.4
 click==7.1.2
 cloudpickle==1.6.0
